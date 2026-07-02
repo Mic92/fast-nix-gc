@@ -97,6 +97,7 @@ fn parse_args_from(args: Vec<std::ffi::OsString>) -> Result<Args> {
         println!("      --dry-run                 Show what would be done");
         println!("      --ensure-free SIZE        Free until SIZE is available (e.g. 50G or 20%)");
         println!("      --keep-recent SPEC        Keep paths registered within SPEC (e.g. 7d)");
+        println!("                                (pinned paths are never freed by --ensure-free)");
         println!("      --no-vacuum               Skip the database VACUUM after deletion");
         println!(
             "      --chunk-size N            Dead paths per delete transaction [default: 65536]"
@@ -218,6 +219,7 @@ fn main() -> Result<()> {
     } else {
         None
     };
+    let ensure_free_need = max_freed;
 
     let mut store = if args.dry_run {
         // No DB writes happen in a dry run; don't take write locks or
@@ -245,6 +247,22 @@ fn main() -> Result<()> {
         extra_gc_roots_dirs: args.gc_roots_dirs,
     };
     let (bytes_freed, paths_deleted) = gc::collect_garbage(&store, &opts)?;
+
+    if let Some(need) = ensure_free_need {
+        if bytes_freed < need {
+            let hint = if keep_recent_after.is_some() {
+                " (reachable from GC roots or pinned by --keep-recent)"
+            } else {
+                " (reachable from GC roots)"
+            };
+            log::warn!(
+                "only freed {}, {} short of --ensure-free target; \
+                 remaining paths are alive{hint}",
+                format_size(bytes_freed),
+                format_size(need - bytes_freed)
+            );
+        }
+    }
 
     if args.dry_run {
         println!(
