@@ -11,7 +11,7 @@ jobs:
     # macos-latest is arm64 -> aarch64-darwin
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Wait for nixbot (buildbot) to finish so we don't duplicate work or
       # run before the main eval has passed. Runs in the PR's own
       # unprivileged context, so no secrets/cache exposure for fork PRs.
