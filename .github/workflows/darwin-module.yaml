@@ -37,7 +37,11 @@ jobs:
             [ -e "$f" ] && sudo mv "$f" "$f.before-nix-darwin" || true
           done
       # Activation coverage: install the launchd daemons on the runner.
-      - run: sudo nix run github:nix-darwin/nix-darwin -- switch --flake '.#ci'
+      # root nix has no token, so forward the workflow one to avoid the
+      # unauthenticated github: API rate limit.
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: sudo env "NIX_CONFIG=access-tokens = github.com=$GH_TOKEN" nix run github:nix-darwin/nix-darwin -- switch --flake '.#ci'
       - name: Verify launchd daemons are loaded
         run: |
           sudo launchctl print system/org.nixos.fast-nix-gc
