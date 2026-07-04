@@ -24,7 +24,9 @@ jobs:
           extra-conf: |
             extra-substituters = https://cache.thalheim.io
             extra-trusted-public-keys = cache.thalheim.io-1:R7msbosLEZKrxk/lKxf9BTjOOH7Ax3H0Qj0/6wiHOgc=
-      - uses: Mic92/hestia@v1
+      - uses: Mic92/hestia-beta@v2.0.0-beta.1
+        with:
+          version: v2.0.0-beta.1
       # Build coverage: evaluates the module and builds the system closure.
       - run: nix build --print-build-logs '.#checks.aarch64-darwin.darwin-module'
       # nix-darwin refuses to overwrite the runner's pre-existing shell
