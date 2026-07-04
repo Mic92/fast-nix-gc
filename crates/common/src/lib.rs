@@ -1,7 +1,9 @@
 pub mod db;
 pub mod logging;
 
-use anyhow::{Context, Result};
+#[cfg(target_os = "linux")]
+use anyhow::Context;
+use anyhow::Result;
 use std::path::Path;
 
 /// Enter a private mount namespace so the rw remount in
