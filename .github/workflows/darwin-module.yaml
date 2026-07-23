@@ -24,7 +24,7 @@ jobs:
           extra-conf: |
             extra-substituters = https://cache.thalheim.io
             extra-trusted-public-keys = cache.thalheim.io-1:R7msbosLEZKrxk/lKxf9BTjOOH7Ax3H0Qj0/6wiHOgc=
-      - uses: Mic92/hestia-beta@v2.0.0-beta.1
+      - uses: Mic92/hestia-beta@v2.1.0-beta.7
         with:
           version: v2.0.0-beta.1
       # Build coverage: evaluates the module and builds the system closure.
