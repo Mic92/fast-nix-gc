@@ -176,14 +176,16 @@ fn init_rayon() {
 
 fn main() -> Result<()> {
     fast_nix_common::logging::init();
-    init_rayon();
 
     let args = parse_args()?;
 
-    // Before rayon spawns its global pool; see docs.
+    // Must happen before rayon spawns its worker threads: only the calling
+    // thread joins the new mount namespace, so threads created earlier would
+    // still see the read-only /nix/store.
     if !args.dry_run {
         unshare_mount_namespace();
     }
+    init_rayon();
 
     if args.ensure_free.is_some() && args.dry_run {
         bail!("--ensure-free cannot be combined with --dry-run");
