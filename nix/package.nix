@@ -35,6 +35,10 @@ rustPlatform.buildRustPackage {
     "-p"
     "fast-nix-optimise"
   ];
+  # Each test spawns a gc process with its own rayon pool; cap threads so
+  # parallel tests don't exhaust the sandbox thread limit.
+  env.RAYON_NUM_THREADS = 2;
+
   cargoTestFlags = [
     "-p"
     "fast-nix-gc"

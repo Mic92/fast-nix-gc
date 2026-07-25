@@ -162,15 +162,30 @@ fn parse_args_from(args: Vec<std::ffi::OsString>) -> Result<Args> {
     Ok(args)
 }
 
+/// Initialize the rayon global pool up front so thread creation failures
+/// (e.g. EAGAIN under a sandbox thread limit) fall back to a single thread
+/// instead of panicking on the first `par_iter`.
+fn init_rayon() {
+    if let Err(e) = rayon::ThreadPoolBuilder::new().build_global() {
+        log::warn!("failed to start rayon thread pool ({e}); falling back to a single thread");
+        let _ = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build_global();
+    }
+}
+
 fn main() -> Result<()> {
     fast_nix_common::logging::init();
 
     let args = parse_args()?;
 
-    // Before rayon spawns its global pool; see docs.
+    // Must happen before rayon spawns its worker threads: only the calling
+    // thread joins the new mount namespace, so threads created earlier would
+    // still see the read-only /nix/store.
     if !args.dry_run {
         unshare_mount_namespace();
     }
+    init_rayon();
 
     if args.ensure_free.is_some() && args.dry_run {
         bail!("--ensure-free cannot be combined with --dry-run");
