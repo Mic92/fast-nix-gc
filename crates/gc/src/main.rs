@@ -162,8 +162,21 @@ fn parse_args_from(args: Vec<std::ffi::OsString>) -> Result<Args> {
     Ok(args)
 }
 
+/// Initialize the rayon global pool up front so thread creation failures
+/// (e.g. EAGAIN under a sandbox thread limit) fall back to a single thread
+/// instead of panicking on the first `par_iter`.
+fn init_rayon() {
+    if let Err(e) = rayon::ThreadPoolBuilder::new().build_global() {
+        log::warn!("failed to start rayon thread pool ({e}); falling back to a single thread");
+        let _ = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build_global();
+    }
+}
+
 fn main() -> Result<()> {
     fast_nix_common::logging::init();
+    init_rayon();
 
     let args = parse_args()?;
 
