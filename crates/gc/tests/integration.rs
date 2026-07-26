@@ -1164,7 +1164,13 @@ fn gc_deletes_non_utf8_store_entry() {
     let store = TestStore::new();
     let raw = std::ffi::OsStr::from_bytes(b"junk-\xff\xfe-entry");
     let path = store.store_dir.join(raw);
-    fs::write(&path, "garbage").unwrap();
+    match fs::write(&path, "garbage") {
+        Ok(()) => {}
+        // Filesystem enforces UTF-8 names (e.g. ZFS utf8only=on); the
+        // scenario cannot exist here, so skip.
+        Err(e) if e.raw_os_error() == Some(nix::libc::EILSEQ) => return,
+        Err(e) => panic!("{e}"),
+    }
 
     let out = store.run_gc_ok(&[]);
 
