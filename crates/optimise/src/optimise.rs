@@ -511,7 +511,15 @@ pub fn cli_main() -> Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(jobs)
         .enable_all()
-        .build()?;
+        .build()
+        .or_else(|e| {
+            // e.g. EAGAIN when a sandbox limits thread creation
+            log::warn!("failed to start {jobs} worker threads ({e}); falling back to one");
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
+        })?;
     let stats = rt.block_on(optimise_store(opts))?;
 
     let enospc = stats.link_enospc.load(Ordering::Relaxed);
