@@ -18,11 +18,14 @@ with rayon.
 fast-nix-gc [OPTIONS]
 
   -d, --delete-old              Remove old profile generations
-      --delete-older-than SPEC  Delete generations older than SPEC (e.g. 30d, 4h)
+      --delete-older-than SPEC  Delete generations and stale gcroots/auto
+                                entries older than SPEC (e.g. 30d, 4h)
       --dry-run                 Show what would be done
       --ensure-free SIZE        Free until SIZE is available (e.g. 50G or 20%)
       --keep-recent SPEC        Keep paths registered within SPEC (e.g. 1d)
       --no-vacuum               Skip the database VACUUM after deletion
+      --no-prune-devshell-roots Keep stale nix-direnv devshell GC roots
+      --no-prune-auto-roots     Keep other stale gcroots/auto links
       --chunk-size N            Dead paths per delete transaction [default: 65536]
       --keep-outputs BOOL       Override the keep-outputs nix.conf setting
       --keep-derivations BOOL   Override the keep-derivations nix.conf setting
@@ -30,6 +33,27 @@ fast-nix-gc [OPTIONS]
       --store-dir PATH          Nix store directory [default: /nix/store]
       --state-dir PATH          Nix state directory [default: /nix/var/nix]
 ```
+
+### Stale GC roots
+
+`gcroots/auto` accumulates indirect roots forever: nix-direnv devshells of
+abandoned projects and forgotten `nix build` result links pin their whole
+closures. With `--delete-older-than`, fast-nix-gc also prunes these:
+
+- **devshell roots** (targets under a `.direnv/` directory) go when the
+  shell was not *loaded* within the window, judged by the newest
+  atime/mtime of the cached `.direnv/*.rc` — nix-direnv sources it on
+  every load, so relatime keeps the atime current to the day. On
+  `noatime` mounts the signal degrades to the last rebuild. Opt out with
+  `--no-prune-devshell-roots`.
+- **all other auto roots** go when the link itself is older than the
+  window (its mtime is the moment Nix registered the root). Opt out with
+  `--no-prune-auto-roots`.
+
+Pruning only unroots: the closure is collected by the same run, the
+project's `result` / `.direnv` symlinks are left in place (now dangling),
+and nix-direnv re-registers on the next visit, at worst rebuilding the
+shell.
 
 ## fast-nix-optimise
 
@@ -96,9 +120,11 @@ Replaces `nix.gc` and `nix.optimise`:
 | `dates` | `"03:15"` | When to run (`systemd.time(7)` calendar event) |
 | `randomizedDelaySec` | `"0"` | Random delay before each run |
 | `persistent` | `true` | Run on next boot if a scheduled run was missed |
-| `deleteOlderThan` | `null` | Remove profile generations older than e.g. `"30d"` |
+| `deleteOlderThan` | `null` | Remove profile generations and stale gcroots/auto entries older than e.g. `"30d"` |
 | `ensureFree` | `null` | Stop once this much disk is free, e.g. `"50G"` or `"20%"` of the store's filesystem |
 | `keepRecent` | `null` | Pin paths registered within e.g. `"1d"` |
+| `pruneDevshellRoots` | `true` | With `deleteOlderThan`: drop nix-direnv devshell roots not loaded within the window |
+| `pruneAutoRoots` | `true` | With `deleteOlderThan`: drop other gcroots/auto links registered before the window |
 | `noVacuum` | `false` | Skip the post-GC database VACUUM (see below) |
 | `chunkSize` | `null` | Dead paths per delete transaction (default 65536) |
 | `gcRootsDirs` | `[ ]` | Extra directories to scan for GC roots, e.g. `[ "/mnt/extra-roots" ]` |
