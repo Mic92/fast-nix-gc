@@ -69,10 +69,10 @@
         }
         // nixpkgs.lib.mapAttrs' (n: nixpkgs.lib.nameValuePair "package-${n}") self.packages.${system}
         // nixpkgs.lib.mapAttrs' (n: nixpkgs.lib.nameValuePair "devshell-${n}") self.devShells.${system}
-        // nixpkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+        // nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           nixos-test = import ./nix/nixos-test.nix { inherit pkgs; };
         }
-        // nixpkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {
+        // nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin {
           darwin-module =
             (import ./nix/darwin-test.nix {
               inherit system;
