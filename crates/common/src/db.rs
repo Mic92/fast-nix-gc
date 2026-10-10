@@ -358,6 +358,13 @@ impl NixDb {
                          (SELECT id FROM DeadPaths)",
                 )?;
             }
+            // Nix >= 2.35: outputPath is text, nothing cascades.
+            if Self::has_table(&self.conn, "BuildTraceV3")? {
+                self.conn.execute_batch(
+                    "DELETE FROM BuildTraceV3 WHERE outputPath IN \
+                         (SELECT path FROM ValidPaths WHERE id IN (SELECT id FROM DeadPaths))",
+                )?;
+            }
             self.conn
                 .execute_batch("DELETE FROM ValidPaths WHERE id IN (SELECT id FROM DeadPaths)")?;
             Ok(())
@@ -870,6 +877,45 @@ mod tests {
                     .unwrap();
             assert_eq!(n, 0, "{table} not cleared");
         }
+    }
+
+    #[test]
+    fn invalidate_ids_clears_build_trace() {
+        // A stale row makes Nix refuse to register a differing rebuild.
+        let t = setup();
+        t.db.conn
+            .execute_batch(
+                "CREATE TABLE BuildTraceV3 (
+                     id integer primary key autoincrement not null,
+                     drvPath text not null,
+                     outputName text not null,
+                     outputPath text not null,
+                     signatures text
+                 );",
+            )
+            .unwrap();
+        let a = add_path(&t.db, &format!("{H1}-a"), 1, 1);
+        add_path(&t.db, &format!("{H2}-b"), 1, 1);
+        t.db.conn
+            .execute_batch(&format!(
+                "INSERT INTO BuildTraceV3 (drvPath, outputName, outputPath) \
+                     VALUES ('{H3}-a.drv', 'out', '{}'), ('{H3}-b.drv', 'out', '{}');",
+                full(&format!("{H1}-a")),
+                full(&format!("{H2}-b"))
+            ))
+            .unwrap();
+
+        t.db.invalidate_ids([a].into_iter()).unwrap();
+
+        let left: Vec<String> =
+            t.db.conn
+                .prepare("SELECT outputPath FROM BuildTraceV3")
+                .unwrap()
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+        assert_eq!(left, [full(&format!("{H2}-b"))]);
     }
 
     #[test]
