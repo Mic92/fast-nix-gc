@@ -41,6 +41,18 @@ in
       '';
     };
 
+    keepGenerations = lib.mkOption {
+      type = lib.types.ints.unsigned;
+      default = 0;
+      example = 2;
+      description = ''
+        With deleteOlderThan set: always keep this many of the newest
+        generations besides the current one, whatever their age, so a
+        profile untouched for longer than the window still has rollback
+        targets.
+      '';
+    };
+
     ensureFree = lib.mkOption {
       type = lib.types.nullOr lib.types.singleLineStr;
       default = null;
@@ -176,6 +188,10 @@ in
     ++ lib.optionals (cfg.deleteOlderThan != null) [
       "--delete-older-than"
       cfg.deleteOlderThan
+    ]
+    ++ lib.optionals (cfg.keepGenerations > 0) [
+      "--keep-generations"
+      (toString cfg.keepGenerations)
     ]
     ++ lib.optional (!cfg.pruneDevshellRoots) "--no-prune-devshell-roots"
     ++ lib.optional (!cfg.pruneAutoRoots) "--no-prune-auto-roots"

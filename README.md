@@ -20,6 +20,8 @@ fast-nix-gc [OPTIONS]
   -d, --delete-old              Remove old profile generations
       --delete-older-than SPEC  Delete generations and stale gcroots/auto
                                 entries older than SPEC (e.g. 30d, 4h)
+      --keep-generations N      Always keep the N newest generations besides
+                                the current one, whatever their age
       --dry-run                 Show what would be done
       --ensure-free SIZE        Free until SIZE is available (e.g. 50G or 20%)
       --keep-recent SPEC        Keep paths registered within SPEC (e.g. 1d)
@@ -123,6 +125,7 @@ Replaces `nix.gc` and `nix.optimise`:
 | `randomizedDelaySec` | `"0"` | Random delay before each run |
 | `persistent` | `true` | Run on next boot if a scheduled run was missed |
 | `deleteOlderThan` | `null` | Remove profile generations and stale gcroots/auto entries older than e.g. `"30d"` |
+| `keepGenerations` | `0` | Always keep this many newest generations besides the current one, whatever their age |
 | `ensureFree` | `null` | Stop once this much disk is free, e.g. `"50G"` or `"20%"` of the store's filesystem |
 | `keepRecent` | `null` | Pin paths registered within e.g. `"1d"` |
 | `pruneDevshellRoots` | `true` | With `deleteOlderThan`: drop nix-direnv devshell roots not loaded within the window |
