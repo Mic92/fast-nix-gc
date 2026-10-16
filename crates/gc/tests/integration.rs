@@ -1477,6 +1477,48 @@ fn delete_older_than_prunes_old_result_root_and_keeps_recent() {
 }
 
 #[test]
+fn delete_older_than_keeps_active_user_profile_generation_root() {
+    // A user profile outside the scanned profiles dirs (e.g.
+    // ~/.local/state/nix/profiles) is rooted only through gcroots/auto,
+    // one auto link per generation link. Its active generation must stay
+    // rooted however old; superseded generations go like any old root.
+    use stale_roots::*;
+    let store = TestStore::new();
+    let active = store.add_path("hm-active", 100);
+    let superseded = store.add_path("hm-superseded", 100);
+    let profiles = store.dir.path().join("home/.local/state/nix/profiles");
+    fs::create_dir_all(&profiles).unwrap();
+    let auto = store.state_dir.join("gcroots/auto");
+    fs::create_dir_all(&auto).unwrap();
+    let mut auto_links = Vec::new();
+    for (n, pkg) in [(1, &superseded), (2, &active)] {
+        let gen_link = profiles.join(format!("home-manager-{n}-link"));
+        std::os::unix::fs::symlink(&pkg.path, &gen_link).unwrap();
+        let link = auto.join(format!("hm-{n}"));
+        std::os::unix::fs::symlink(&gen_link, &link).unwrap();
+        set_times(&link, OLD, OLD);
+        auto_links.push(link);
+    }
+    std::os::unix::fs::symlink("home-manager-2-link", profiles.join("home-manager")).unwrap();
+
+    store.run_gc_ok(&["--delete-older-than", "30d"]);
+
+    assert!(
+        auto_links[0].symlink_metadata().is_err(),
+        "superseded generation root kept"
+    );
+    assert!(!superseded.path.exists(), "unrooted generation kept");
+    assert!(
+        auto_links[1].symlink_metadata().is_ok(),
+        "active generation root pruned"
+    );
+    assert!(
+        active.path.exists() && store.in_db(&active),
+        "active generation deleted"
+    );
+}
+
+#[test]
 fn no_prune_flags_keep_stale_roots() {
     use stale_roots::*;
     let store = TestStore::new();

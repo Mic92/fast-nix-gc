@@ -13,7 +13,11 @@
 //!   noatime this degrades to the last rebuild). A `.direnv` without rc
 //!   files falls back to the auto link's own mtime.
 //! - all other auto roots: stale when the auto link's own mtime (= the
-//!   moment Nix registered the root) is older than the cutoff.
+//!   moment Nix registered the root) is older than the cutoff. Exempt: the
+//!   active generation of a profile (`<dir>/<name>` -> `<name>-<N>-link`).
+//!   Profiles outside the scanned profiles dirs, e.g. a user's
+//!   ~/.local/state/nix/profiles, are rooted only through these links, and
+//!   an untouched profile's active generation is as old as its last switch.
 //!
 //! Removing the auto link only unroots: the store paths are collected by
 //! the GC pass that follows, and nix-direnv re-registers on the next visit
@@ -72,7 +76,7 @@ pub fn prune_stale_auto_roots(
                 }
             }
             None => {
-                if !prune_other {
+                if !prune_other || is_active_generation(&target) {
                     continue;
                 }
                 match link_mtime(&link) {
@@ -133,6 +137,28 @@ fn newest_rc_activity(direnv: &Path) -> Option<SystemTime> {
 
 fn link_mtime(link: &Path) -> Option<SystemTime> {
     fs::symlink_metadata(link).ok()?.modified().ok()
+}
+
+/// Whether `target` is a profile generation link (`<dir>/<name>-<N>-link`)
+/// that the profile symlink `<dir>/<name>` currently points to.
+fn is_active_generation(target: &Path) -> bool {
+    let (Some(dir), Some(link_name)) = (target.parent(), target.file_name()) else {
+        return false;
+    };
+    let Some((profile, generation)) = link_name
+        .to_str()
+        .and_then(|n| n.strip_suffix("-link"))
+        .and_then(|n| n.rsplit_once('-'))
+    else {
+        return false;
+    };
+    if profile.is_empty()
+        || generation.is_empty()
+        || !generation.bytes().all(|b| b.is_ascii_digit())
+    {
+        return false;
+    }
+    fs::read_link(dir.join(profile)).is_ok_and(|active| dir.join(active) == target)
 }
 
 #[cfg(test)]

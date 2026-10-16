@@ -47,8 +47,10 @@ closures. With `--delete-older-than`, fast-nix-gc also prunes these:
   `noatime` mounts the signal degrades to the last rebuild. Opt out with
   `--no-prune-devshell-roots`.
 - **all other auto roots** go when the link itself is older than the
-  window (its mtime is the moment Nix registered the root). Opt out with
-  `--no-prune-auto-roots`.
+  window (its mtime is the moment Nix registered the root). The active
+  generation of a profile (`<name>` -> `<name>-<N>-link`, e.g. a user's
+  `~/.local/state/nix/profiles/home-manager`) always stays, however long
+  ago it was switched to. Opt out with `--no-prune-auto-roots`.
 
 Pruning only unroots: the closure is collected by the same run, the
 project's `result` / `.direnv` symlinks are left in place (now dangling),
