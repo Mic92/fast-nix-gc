@@ -139,7 +139,18 @@ impl Drop for ProfileLock {
     }
 }
 
-fn delete_old_generations(profile: &Path, dry_run: bool) -> Result<()> {
+/// Generation numbers of the `keep` newest generations other than
+/// `current`: rollback targets that survive any age cutoff.
+fn rollback_floor(gens: &[(PathBuf, u64)], current: u64, keep: usize) -> Vec<u64> {
+    gens.iter()
+        .rev()
+        .map(|(_, g)| *g)
+        .filter(|g| *g != current)
+        .take(keep)
+        .collect()
+}
+
+fn delete_old_generations(profile: &Path, keep: usize, dry_run: bool) -> Result<()> {
     // Serialize against nix-env/nixos-rebuild generation switches, which
     // take the same lock (profiles.cc lockProfile).
     let _lock = ProfileLock::acquire(profile)?;
@@ -154,9 +165,10 @@ fn delete_old_generations(profile: &Path, dry_run: bool) -> Result<()> {
         return Ok(());
     };
     let gens = find_generation_links(profile)?;
+    let floor = rollback_floor(&gens, current, keep);
 
     for (path, r#gen) in &gens {
-        if *r#gen == current {
+        if *r#gen == current || floor.contains(r#gen) {
             continue;
         }
         if dry_run {
@@ -169,7 +181,12 @@ fn delete_old_generations(profile: &Path, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
-fn delete_generations_older_than(profile: &Path, cutoff: SystemTime, dry_run: bool) -> Result<()> {
+fn delete_generations_older_than(
+    profile: &Path,
+    cutoff: SystemTime,
+    keep: usize,
+    dry_run: bool,
+) -> Result<()> {
     let _lock = ProfileLock::acquire(profile)?;
     // Same fail-closed rule as delete_old_generations.
     let Some(current) = current_generation(profile)? else {
@@ -180,6 +197,7 @@ fn delete_generations_older_than(profile: &Path, cutoff: SystemTime, dry_run: bo
         return Ok(());
     };
     let gens = find_generation_links(profile)?;
+    let floor = rollback_floor(&gens, current, keep);
 
     let mtime_of = |path: &Path| -> Option<SystemTime> {
         let meta = fs::symlink_metadata(path).ok()?;
@@ -197,7 +215,7 @@ fn delete_generations_older_than(profile: &Path, cutoff: SystemTime, dry_run: bo
         .map(|(_, g)| *g);
 
     for (path, r#gen) in &gens {
-        if *r#gen == current || Some(*r#gen) == newest_older {
+        if *r#gen == current || Some(*r#gen) == newest_older || floor.contains(r#gen) {
             continue;
         }
         let Some(mtime) = mtime_of(path) else {
@@ -215,9 +233,12 @@ fn delete_generations_older_than(profile: &Path, cutoff: SystemTime, dry_run: bo
     Ok(())
 }
 
+/// `keep`: the newest generations besides the current one that are never
+/// deleted, whatever their age (see rollback_floor).
 pub fn remove_old_generations(
     dir: &Path,
     delete_older_than: Option<SystemTime>,
+    keep: usize,
     dry_run: bool,
 ) -> Result<()> {
     let entries: Vec<_> = match fs::read_dir(dir) {
@@ -242,13 +263,13 @@ pub fn remove_old_generations(
             if link_target.to_string_lossy().contains("link") {
                 log::info!("removing old generations of profile {}", path.display());
                 if let Some(cutoff) = delete_older_than {
-                    delete_generations_older_than(&path, cutoff, dry_run)?;
+                    delete_generations_older_than(&path, cutoff, keep, dry_run)?;
                 } else {
-                    delete_old_generations(&path, dry_run)?;
+                    delete_old_generations(&path, keep, dry_run)?;
                 }
             }
         } else if ft.is_dir() {
-            remove_old_generations(&path, delete_older_than, dry_run)?;
+            remove_old_generations(&path, delete_older_than, keep, dry_run)?;
         }
         Ok(())
     })?;
@@ -385,10 +406,10 @@ mod tests {
         let (dir, profile) = setup_profile(3, 2);
 
         // Dry run leaves everything in place.
-        delete_old_generations(&profile, true).unwrap();
+        delete_old_generations(&profile, 0, true).unwrap();
         assert_eq!(existing_gens(dir.path()), vec![1, 2, 3]);
 
-        delete_old_generations(&profile, false).unwrap();
+        delete_old_generations(&profile, 0, false).unwrap();
         assert_eq!(existing_gens(dir.path()), vec![2]);
     }
 
@@ -408,21 +429,48 @@ mod tests {
         // older generation, and as the one active at the cutoff it is
         // kept for rollback (Nix semantics). Nothing goes.
         let cutoff = base + Duration::from_secs(200);
-        delete_generations_older_than(&profile, cutoff, true).unwrap();
+        delete_generations_older_than(&profile, cutoff, 0, true).unwrap();
         assert_eq!(existing_gens(dir.path()), vec![1, 2, 3, 4]);
-        delete_generations_older_than(&profile, cutoff, false).unwrap();
+        delete_generations_older_than(&profile, cutoff, 0, false).unwrap();
         assert_eq!(existing_gens(dir.path()), vec![1, 2, 3, 4]);
 
         // Cutoff between gen 3 and 4: gens 1-3 are older, gen 3 was
         // active at the cutoff and is kept; 1 and 2 go.
         let cutoff = base + Duration::from_secs(350);
-        delete_generations_older_than(&profile, cutoff, false).unwrap();
+        delete_generations_older_than(&profile, cutoff, 0, false).unwrap();
         assert_eq!(existing_gens(dir.path()), vec![3, 4]);
 
         // Cutoff after all gens: the newest older one is the current
         // generation itself, so everything else goes.
-        delete_generations_older_than(&profile, base + Duration::from_secs(10_000), false).unwrap();
+        delete_generations_older_than(&profile, base + Duration::from_secs(10_000), 0, false)
+            .unwrap();
         assert_eq!(existing_gens(dir.path()), vec![4]);
+    }
+
+    #[test]
+    fn keep_generations_survive_any_cutoff() {
+        // No switch within the window: without a floor only the current
+        // generation would remain, leaving nothing to roll back to.
+        let (dir, profile) = setup_profile(6, 5);
+        let old = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        for i in 1u64..=6 {
+            set_link_mtime(&dir.path().join(format!("system-{i}-link")), old);
+        }
+
+        delete_generations_older_than(&profile, SystemTime::now(), 2, true).unwrap();
+        assert_eq!(existing_gens(dir.path()), vec![1, 2, 3, 4, 5, 6]);
+
+        // The two newest besides current (6, after a rollback to 5, and 4)
+        // stay; so does current.
+        delete_generations_older_than(&profile, SystemTime::now(), 2, false).unwrap();
+        assert_eq!(existing_gens(dir.path()), vec![4, 5, 6]);
+    }
+
+    #[test]
+    fn keep_generations_applies_to_delete_old() {
+        let (dir, profile) = setup_profile(5, 5);
+        delete_old_generations(&profile, 2, false).unwrap();
+        assert_eq!(existing_gens(dir.path()), vec![3, 4, 5]);
     }
 
     #[test]
@@ -441,7 +489,7 @@ mod tests {
         // Symlink whose target does not contain "link": must be left alone.
         symlink("/nix/store/zzz", outer.path().join("plain")).unwrap();
 
-        remove_old_generations(outer.path(), None, false).unwrap();
+        remove_old_generations(outer.path(), None, 0, false).unwrap();
 
         let gens: Vec<u64> = find_generation_links(&nested.join("prof"))
             .unwrap()
@@ -488,10 +536,10 @@ mod tests {
         fs::remove_file(&profile).unwrap();
         symlink("/nix/store/custom-env", &profile).unwrap();
 
-        delete_old_generations(&profile, false).unwrap();
+        delete_old_generations(&profile, 0, false).unwrap();
         assert_eq!(existing_gens(dir.path()), vec![1, 2, 3]);
 
-        delete_generations_older_than(&profile, SystemTime::now(), false).unwrap();
+        delete_generations_older_than(&profile, SystemTime::now(), 0, false).unwrap();
         assert_eq!(existing_gens(dir.path()), vec![1, 2, 3]);
     }
 

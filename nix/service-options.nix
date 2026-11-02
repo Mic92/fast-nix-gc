@@ -32,7 +32,25 @@ in
       type = lib.types.nullOr lib.types.singleLineStr;
       default = null;
       example = "30d";
-      description = "Delete profile generations older than this.";
+      description = ''
+        Delete profile generations older than this. Also prunes stale
+        gcroots/auto entries by the same cutoff: nix-direnv devshell roots
+        not loaded within the window and other auto roots (e.g. old
+        `result` links) registered before it. See pruneDevshellRoots /
+        pruneAutoRoots to opt out.
+      '';
+    };
+
+    keepGenerations = lib.mkOption {
+      type = lib.types.ints.unsigned;
+      default = 0;
+      example = 2;
+      description = ''
+        With deleteOlderThan set: always keep this many of the newest
+        generations besides the current one, whatever their age, so a
+        profile untouched for longer than the window still has rollback
+        targets.
+      '';
     };
 
     ensureFree = lib.mkOption {
@@ -53,6 +71,27 @@ in
       description = ''
         Keep store paths registered within this time window. Avoids deleting
         build dependencies fetched during a recent build.
+      '';
+    };
+
+    pruneDevshellRoots = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        With deleteOlderThan set, remove GC roots of nix-direnv devshells
+        that were not loaded within the window (judged by the atime/mtime
+        of the cached .direnv/*.rc; under noatime mounts this degrades to
+        the last rebuild).
+      '';
+    };
+
+    pruneAutoRoots = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        With deleteOlderThan set, remove non-devshell gcroots/auto links
+        (e.g. from old `nix build` result symlinks) registered before the
+        window.
       '';
     };
 
@@ -150,6 +189,12 @@ in
       "--delete-older-than"
       cfg.deleteOlderThan
     ]
+    ++ lib.optionals (cfg.keepGenerations > 0) [
+      "--keep-generations"
+      (toString cfg.keepGenerations)
+    ]
+    ++ lib.optional (!cfg.pruneDevshellRoots) "--no-prune-devshell-roots"
+    ++ lib.optional (!cfg.pruneAutoRoots) "--no-prune-auto-roots"
     ++ lib.optionals (cfg.ensureFree != null) [
       "--ensure-free"
       cfg.ensureFree

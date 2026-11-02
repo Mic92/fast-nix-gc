@@ -1,13 +1,16 @@
 use anyhow::{Context, Result, bail};
 use fast_nix_common::unshare_mount_namespace;
-use fast_nix_gc::{db, format_size, gc, profiles};
+use fast_nix_gc::{auto_roots, db, format_size, gc, profiles};
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 
 struct Args {
     delete_old: bool,
     delete_older_than: Option<String>,
+    keep_generations: usize,
     dry_run: bool,
+    no_prune_devshell_roots: bool,
+    no_prune_auto_roots: bool,
     ensure_free: Option<EnsureFree>,
     keep_recent: Option<String>,
     no_vacuum: bool,
@@ -94,11 +97,16 @@ fn parse_args_from(args: Vec<std::ffi::OsString>) -> Result<Args> {
         println!("Options:");
         println!("  -d, --delete-old              Remove old profile generations");
         println!("      --delete-older-than SPEC  Delete generations older than SPEC (e.g. 30d)");
+        println!("      --keep-generations N      With -d/--delete-older-than: always keep the N");
+        println!("                                newest generations besides the current one");
         println!("      --dry-run                 Show what would be done");
         println!("      --ensure-free SIZE        Free until SIZE is available (e.g. 50G or 20%)");
         println!("      --keep-recent SPEC        Keep paths registered within SPEC (e.g. 7d)");
         println!("                                (pinned paths are never freed by --ensure-free)");
         println!("      --no-vacuum               Skip the database VACUUM after deletion");
+        println!("      --no-prune-devshell-roots Keep stale nix-direnv devshell GC roots");
+        println!("                                (--delete-older-than removes them by default)");
+        println!("      --no-prune-auto-roots     Keep other stale gcroots/auto links");
         println!(
             "      --chunk-size N            Dead paths per delete transaction [default: 65536]"
         );
@@ -119,7 +127,10 @@ fn parse_args_from(args: Vec<std::ffi::OsString>) -> Result<Args> {
     let args = Args {
         delete_old,
         delete_older_than,
+        keep_generations: pargs.opt_value_from_str("--keep-generations")?.unwrap_or(0),
         dry_run: pargs.contains("--dry-run"),
+        no_prune_devshell_roots: pargs.contains("--no-prune-devshell-roots"),
+        no_prune_auto_roots: pargs.contains("--no-prune-auto-roots"),
         ensure_free: pargs.opt_value_from_fn("--ensure-free", parse_ensure_free)?,
         keep_recent: pargs.opt_value_from_str("--keep-recent")?,
         no_vacuum: pargs.contains("--no-vacuum"),
@@ -142,7 +153,10 @@ fn parse_args_from(args: Vec<std::ffi::OsString>) -> Result<Args> {
             "-d",
             "--delete-old",
             "--delete-older-than",
+            "--keep-generations",
             "--dry-run",
+            "--no-prune-devshell-roots",
+            "--no-prune-auto-roots",
             "--ensure-free",
             "--keep-recent",
             "--no-vacuum",
@@ -213,8 +227,24 @@ fn main() -> Result<()> {
         profiles::profile_dirs(&args.state_dir)
             .par_iter()
             .try_for_each(|dir| {
-                profiles::remove_old_generations(dir, delete_older_cutoff, args.dry_run)
+                profiles::remove_old_generations(
+                    dir,
+                    delete_older_cutoff,
+                    args.keep_generations,
+                    args.dry_run,
+                )
             })?;
+    }
+    // Before root discovery, so pruned links never register as roots in
+    // this run; see auto_roots.rs for the staleness signals.
+    if let Some(cutoff) = delete_older_cutoff {
+        auto_roots::prune_stale_auto_roots(
+            &args.state_dir,
+            cutoff,
+            !args.no_prune_devshell_roots,
+            !args.no_prune_auto_roots,
+            args.dry_run,
+        )?;
     }
 
     let max_freed = if let Some(ensure_free) = args.ensure_free {

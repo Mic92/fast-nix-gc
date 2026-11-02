@@ -1351,3 +1351,230 @@ fn gc_vacuums_db_after_mass_deletion() {
         "db not vacuumed: before={before} after={after}"
     );
 }
+
+/// Helpers for the stale-auto-root pruning tests (--delete-older-than).
+mod stale_roots {
+    use super::*;
+    use nix::sys::stat::UtimensatFlags;
+    use nix::sys::time::TimeSpec;
+
+    pub const OLD: i64 = 1_000_000; // 1970; far past any cutoff
+    pub const RECENT_SLACK: i64 = 60;
+
+    pub fn now() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+    }
+
+    pub fn set_times(path: &std::path::Path, atime: i64, mtime: i64) {
+        nix::sys::stat::utimensat(
+            nix::fcntl::AT_FDCWD,
+            path,
+            &TimeSpec::new(atime, 0),
+            &TimeSpec::new(mtime, 0),
+            UtimensatFlags::NoFollowSymlink,
+        )
+        .unwrap();
+    }
+
+    /// A fake nix-direnv project: `<base>/proj/.direnv/flake-profile-1-link`
+    /// pointing at `target`, a cached rc with the given times, and an auto
+    /// root registered for the profile link. Returns the auto link path.
+    pub fn add_devshell_root(
+        store: &TestStore,
+        name: &str,
+        target: &Pkg,
+        rc_atime: i64,
+        rc_mtime: i64,
+    ) -> PathBuf {
+        let direnv = store.dir.path().join(name).join(".direnv");
+        fs::create_dir_all(&direnv).unwrap();
+        let profile = direnv.join("flake-profile-1-link");
+        std::os::unix::fs::symlink(&target.path, &profile).unwrap();
+        let rc = direnv.join("flake-profile-abc.rc");
+        fs::write(&rc, "export FOO=bar").unwrap();
+        set_times(&rc, rc_atime, rc_mtime);
+
+        let auto = store.state_dir.join("gcroots/auto");
+        fs::create_dir_all(&auto).unwrap();
+        let link = auto.join(name);
+        std::os::unix::fs::symlink(&profile, &link).unwrap();
+        link
+    }
+
+    /// A plain auto root (result-link style) whose link mtime is `mtime`.
+    pub fn add_result_root(store: &TestStore, name: &str, target: &Pkg, mtime: i64) -> PathBuf {
+        let user_link = store.dir.path().join(format!("{name}-result"));
+        std::os::unix::fs::symlink(&target.path, &user_link).unwrap();
+        let auto = store.state_dir.join("gcroots/auto");
+        fs::create_dir_all(&auto).unwrap();
+        let link = auto.join(name);
+        std::os::unix::fs::symlink(&user_link, &link).unwrap();
+        set_times(&link, mtime, mtime);
+        link
+    }
+}
+
+#[test]
+fn delete_older_than_prunes_stale_devshell_root() {
+    use stale_roots::*;
+    let store = TestStore::new();
+    let lib = store.add_path("stale-shell", 100);
+    let link = add_devshell_root(&store, "p1", &lib, OLD, OLD);
+
+    store.run_gc_ok(&["--delete-older-than", "30d"]);
+
+    assert!(link.symlink_metadata().is_err(), "stale devshell root kept");
+    assert!(
+        !lib.path.exists() && !store.in_db(&lib),
+        "unrooted path kept"
+    );
+}
+
+#[test]
+fn delete_older_than_keeps_recently_loaded_devshell_root() {
+    use stale_roots::*;
+    let store = TestStore::new();
+    let lib = store.add_path("loaded-shell", 100);
+    // Rebuilt long ago, but loaded just now: atime fresh, mtime old.
+    let link = add_devshell_root(&store, "p1", &lib, now() - RECENT_SLACK, OLD);
+
+    store.run_gc_ok(&["--delete-older-than", "30d"]);
+
+    assert!(
+        link.symlink_metadata().is_ok(),
+        "loaded devshell root pruned"
+    );
+    assert!(
+        lib.path.exists() && store.in_db(&lib),
+        "rooted path deleted"
+    );
+}
+
+#[test]
+fn delete_older_than_prunes_old_result_root_and_keeps_recent() {
+    use stale_roots::*;
+    let store = TestStore::new();
+    let old_lib = store.add_path("old-result", 100);
+    let new_lib = store.add_path("new-result", 100);
+    let old_link = add_result_root(&store, "r-old", &old_lib, OLD);
+    let new_link = add_result_root(&store, "r-new", &new_lib, now() - RECENT_SLACK);
+
+    store.run_gc_ok(&["--delete-older-than", "30d"]);
+
+    assert!(old_link.symlink_metadata().is_err(), "old result root kept");
+    assert!(!old_lib.path.exists(), "unrooted path kept");
+    assert!(
+        new_link.symlink_metadata().is_ok(),
+        "recent result root pruned"
+    );
+    assert!(
+        new_lib.path.exists() && store.in_db(&new_lib),
+        "rooted path deleted"
+    );
+}
+
+#[test]
+fn delete_older_than_keeps_active_user_profile_generation_root() {
+    // A user profile outside the scanned profiles dirs (e.g.
+    // ~/.local/state/nix/profiles) is rooted only through gcroots/auto,
+    // one auto link per generation link. Its active generation must stay
+    // rooted however old; superseded generations go like any old root.
+    use stale_roots::*;
+    let store = TestStore::new();
+    let active = store.add_path("hm-active", 100);
+    let superseded = store.add_path("hm-superseded", 100);
+    let profiles = store.dir.path().join("home/.local/state/nix/profiles");
+    fs::create_dir_all(&profiles).unwrap();
+    let auto = store.state_dir.join("gcroots/auto");
+    fs::create_dir_all(&auto).unwrap();
+    let mut auto_links = Vec::new();
+    for (n, pkg) in [(1, &superseded), (2, &active)] {
+        let gen_link = profiles.join(format!("home-manager-{n}-link"));
+        std::os::unix::fs::symlink(&pkg.path, &gen_link).unwrap();
+        let link = auto.join(format!("hm-{n}"));
+        std::os::unix::fs::symlink(&gen_link, &link).unwrap();
+        set_times(&link, OLD, OLD);
+        auto_links.push(link);
+    }
+    std::os::unix::fs::symlink("home-manager-2-link", profiles.join("home-manager")).unwrap();
+
+    store.run_gc_ok(&["--delete-older-than", "30d"]);
+
+    assert!(
+        auto_links[0].symlink_metadata().is_err(),
+        "superseded generation root kept"
+    );
+    assert!(!superseded.path.exists(), "unrooted generation kept");
+    assert!(
+        auto_links[1].symlink_metadata().is_ok(),
+        "active generation root pruned"
+    );
+    assert!(
+        active.path.exists() && store.in_db(&active),
+        "active generation deleted"
+    );
+}
+
+#[test]
+fn no_prune_flags_keep_stale_roots() {
+    use stale_roots::*;
+    let store = TestStore::new();
+    let shell = store.add_path("optout-shell", 100);
+    let result = store.add_path("optout-result", 100);
+    let shell_link = add_devshell_root(&store, "p1", &shell, OLD, OLD);
+    let result_link = add_result_root(&store, "r1", &result, OLD);
+
+    store.run_gc_ok(&[
+        "--delete-older-than",
+        "30d",
+        "--no-prune-devshell-roots",
+        "--no-prune-auto-roots",
+    ]);
+
+    assert!(
+        shell_link.symlink_metadata().is_ok(),
+        "opted-out devshell root pruned"
+    );
+    assert!(
+        result_link.symlink_metadata().is_ok(),
+        "opted-out result root pruned"
+    );
+    assert!(shell.path.exists() && result.path.exists());
+}
+
+#[test]
+fn dry_run_reports_but_keeps_stale_roots() {
+    use stale_roots::*;
+    let store = TestStore::new();
+    let lib = store.add_path("dry-shell", 100);
+    let link = add_devshell_root(&store, "p1", &lib, OLD, OLD);
+
+    let out = store.run_gc_ok(&["--delete-older-than", "30d", "--dry-run"]);
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("would remove"), "stdout: {stdout}");
+    assert!(link.symlink_metadata().is_ok(), "dry run removed a root");
+    assert!(
+        lib.path.exists() && store.in_db(&lib),
+        "dry run deleted a path"
+    );
+}
+
+#[test]
+fn delete_old_without_spec_prunes_no_roots() {
+    use stale_roots::*;
+    let store = TestStore::new();
+    let lib = store.add_path("no-spec-shell", 100);
+    let link = add_devshell_root(&store, "p1", &lib, OLD, OLD);
+
+    store.run_gc_ok(&["--delete-old"]);
+
+    assert!(
+        link.symlink_metadata().is_ok(),
+        "-d without age pruned a root"
+    );
+    assert!(lib.path.exists() && store.in_db(&lib));
+}

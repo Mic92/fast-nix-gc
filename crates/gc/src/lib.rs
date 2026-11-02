@@ -1,3 +1,4 @@
+pub mod auto_roots;
 pub mod gc;
 pub mod gc_socket;
 pub mod profiles;
