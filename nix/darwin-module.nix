@@ -64,18 +64,20 @@ in
         Disable nix.gc.automatic to avoid running two garbage collectors.
       '';
 
-      launchd.daemons.fast-nix-gc.serviceConfig = {
-        ProgramArguments = cfg.argv;
-        RunAtLoad = false;
-        StartCalendarInterval = lib.mkIf cfg.automatic cfg.startCalendarInterval;
-        # `nix config show` for keep-derivations/keep-outputs. Raw
-        # ProgramArguments bypass nix-darwin's `path` wrapper, so put nix
-        # on PATH explicitly. When nix-darwin does not manage nix (an
-        # external installer), config.nix.package is unavailable, so fall
-        # back to the standard profile/installer locations.
-        EnvironmentVariables.PATH =
-          lib.optionalString config.nix.enable "${config.nix.package}/bin:"
-          + "/nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin";
+      launchd.daemons.fast-nix-gc = {
+        # nix-darwin waits for the Nix store before running command.
+        command = lib.escapeShellArgs cfg.argv;
+        # `nix config show` needs nix on PATH even with an external installer.
+        path = lib.optional config.nix.enable config.nix.package ++ [
+          "/nix/var/nix/profiles/default/bin"
+          "/usr/local/bin"
+          "/usr/bin"
+          "/bin"
+        ];
+        serviceConfig = {
+          RunAtLoad = false;
+          StartCalendarInterval = lib.mkIf cfg.automatic cfg.startCalendarInterval;
+        };
       };
     })
 
@@ -92,10 +94,12 @@ in
         enabled. Disable nix.optimise.automatic to avoid running both.
       '';
 
-      launchd.daemons.fast-nix-optimise.serviceConfig = {
-        ProgramArguments = ocfg.argv;
-        RunAtLoad = false;
-        StartCalendarInterval = lib.mkIf ocfg.automatic ocfg.startCalendarInterval;
+      launchd.daemons.fast-nix-optimise = {
+        command = lib.escapeShellArgs ocfg.argv;
+        serviceConfig = {
+          RunAtLoad = false;
+          StartCalendarInterval = lib.mkIf ocfg.automatic ocfg.startCalendarInterval;
+        };
       };
     })
   ];
